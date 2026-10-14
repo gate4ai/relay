@@ -238,3 +238,56 @@ func TestPeekSNI(t *testing.T) {
 		t.Fatal(sni, len(prefix), err)
 	}
 }
+
+// TestRoute: стороннее имя пробрасывается на бэкенд без расшифровки — клиент
+// видит сертификат бэкенда, а не relay.
+func TestRoute(t *testing.T) {
+	e := start(t)
+	cert, leaf, _ := SelfSigned("site.test")
+	bl, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bl.Close() })
+	go http.Serve(bl, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "site "+r.Host) }))
+	if err := e.srv.AddRoute("Site.Test.", bl.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	get := func(host string, pool *x509.CertPool) (string, *x509.Certificate, error) {
+		c := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{DialContext: e.dial, DisableKeepAlives: true,
+			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: host}}}
+		resp, err := c.Get("https://" + host + "/")
+		if err != nil {
+			return "", nil, err
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b), resp.TLS.PeerCertificates[0], nil
+	}
+	body, peer, err := get("site.test", pool)
+	if err != nil || body != "site site.test" || !peer.Equal(leaf) {
+		t.Fatal(body, err)
+	}
+	if _, _, err := get("other.test", pool); err == nil {
+		t.Fatal("unknown SNI must be reset")
+	}
+	// Relay API остаётся на своём имени.
+	if resp, err := e.client.Get("https://relay.test/api/health"); err != nil || resp.StatusCode != 200 {
+		t.Fatal(resp, err)
+	}
+	for _, h := range []string{"relay.test", "abc.relay.test", ""} {
+		if e.srv.AddRoute(h, "127.0.0.1:1") == nil {
+			t.Fatalf("route %q must be rejected", h)
+		}
+	}
+	if e.srv.AddRoute("x.test", "no-port") == nil {
+		t.Fatal("bad backend address must be rejected")
+	}
+	// Бэкенд недоступен — соединение сбрасывается.
+	bl.Close()
+	if _, _, err := get("site.test", pool); err == nil {
+		t.Fatal("expected failure with backend down")
+	}
+}

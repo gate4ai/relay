@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -27,6 +28,10 @@ type Server struct {
 	Log      *slog.Logger
 	HoldFor  time.Duration // сколько держать входящее при офлайн-устройстве (~30 с)
 	AllowReg bool          // открытая регистрация устройств
+	// Routes — сторонние имена на том же порту (сайт gate4.ai и т. п.): SNI →
+	// TCP-адрес бэкенда. Трафик пробрасывается без расшифровки, TLS (и ACME
+	// TLS-ALPN-01) завершает бэкенд.
+	Routes map[string]string
 
 	mu       sync.Mutex
 	sessions map[string]*yamux.Session
@@ -36,11 +41,28 @@ type Server struct {
 // NewServer создаёт relay.
 func NewServer(domain string, tlsCfg *tls.Config, st *Store) *Server {
 	return &Server{Domain: strings.ToLower(domain), TLS: tlsCfg, Store: st, Log: slog.Default(), HoldFor: 30 * time.Second,
-		AllowReg: true, sessions: map[string]*yamux.Session{}, waiters: map[string][]chan struct{}{}}
+		AllowReg: true, Routes: map[string]string{}, sessions: map[string]*yamux.Session{}, waiters: map[string][]chan struct{}{}}
 }
 
 // DeviceHost — публичное имя устройства.
 func (s *Server) DeviceHost(id string) string { return id + "." + s.Domain }
+
+// AddRoute пробрасывает соединения с SNI host на TCP-адрес addr. Имена relay
+// и его устройств занять нельзя.
+func (s *Server) AddRoute(host, addr string) error {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" || addr == "" {
+		return errors.New("route: need host=addr")
+	}
+	if host == s.Domain || strings.HasSuffix(host, "."+s.Domain) {
+		return fmt.Errorf("route %s: names under %s belong to the relay and its devices", host, s.Domain)
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("route %s: %w", host, err)
+	}
+	s.Routes[host] = addr
+	return nil
+}
 
 // Serve принимает TCP-соединения (порт 443).
 func (s *Server) Serve(l net.Listener) error {
@@ -68,6 +90,10 @@ func (s *Server) handle(c net.Conn, api *chanListener) {
 		api.push(WithPrefix(c, prefix))
 		return
 	}
+	if addr, ok := s.Routes[sni]; ok {
+		s.forward(c, prefix, sni, addr)
+		return
+	}
 	id, ok := strings.CutSuffix(sni, "."+s.Domain)
 	if !ok || id == "" || strings.Contains(id, ".") {
 		c.Close()
@@ -91,6 +117,25 @@ func (s *Server) handle(c net.Conn, api *chanListener) {
 	go func() { _, _ = st.Write(prefix); _, _ = io.Copy(st, c); st.Close() }()
 	_, _ = io.Copy(c, st)
 	c.Close()
+}
+
+// forward пробрасывает соединение на бэкенд маршрута, не расшифровывая его.
+func (s *Server) forward(c net.Conn, prefix []byte, host, addr string) {
+	defer c.Close()
+	b, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		s.Log.Warn("route backend unreachable", "host", host, "backend", addr, "err", err)
+		return
+	}
+	defer b.Close()
+	go func() {
+		_, _ = b.Write(prefix)
+		_, _ = io.Copy(b, c)
+		if tc, ok := b.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}()
+	_, _ = io.Copy(c, b)
 }
 
 // SetHoldFor меняет время удержания входящих соединений офлайн-устройства.
