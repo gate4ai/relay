@@ -25,3 +25,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go build ./... && go vet ./...
+  e2e:
+    uses: gate4ai/e2e/.github/workflows/e2e.yml@main
+    with:
+      repo: ${{ github.repository }}
+      ref: ${{ github.sha }}
