@@ -25,6 +25,12 @@ gate4ai-relay --domain relay.example.org --listen :443 --dns :53 --ipv4 203.0.11
 
 Зону `relay.example.org` делегируйте (NS) на этот сервер. Для разработки — `--self-signed`, на устройстве `relay.self_signed: true` и `relay.ca_file`.
 
+## Выкладка relay.gate4.ai
+
+Каждый коммит в `main`, прошедший CI (тесты, сборка, e2e), выкладывается на сервер relay.gate4.ai: задача `deploy` в [ci.yml](.github/workflows/ci.yml) собирает `gate4ai-relay` под linux/amd64 (версия — `git describe`), копирует его по SSH и запускает [deploy/remote-install.sh](deploy/remote-install.sh). Скрипт заменяет только бинарник: unit systemd и `/etc/gate4ai-relay/env` (сертификат, `--route` сайта) остаются как настроены на сервере. Если после перезапуска API relay не отвечает, возвращается прежний бинарник. Перезапуск обрывает туннели устройств на пару секунд, устройства переподключаются сами.
+
+Настройки — в окружении `production` репозитория: переменная `DEPLOY_HOST`, секреты `DEPLOY_SSH_KEY` (ключ, открытая часть которого — в `authorized_keys` root на сервере) и `DEPLOY_KNOWN_HOSTS`. Без `DEPLOY_HOST` задача пропускается. Релизы по тегу `v*` (GoReleaser) — отдельно, для self-hosted.
+
 ## Лицензия
 
 [FSL-1.1-ALv2](LICENSE): исходник открыт, запрещено конкурирующее использование; каждая версия через два года становится Apache-2.0.

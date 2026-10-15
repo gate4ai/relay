@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -30,3 +31,41 @@ jobs:
     with:
       repo: ${{ github.repository }}
       ref: ${{ github.sha }}
+  # Каждая сборка main выкладывается на сервер relay.gate4.ai (vars.DEPLOY_HOST,
+  # secrets DEPLOY_SSH_KEY и DEPLOY_KNOWN_HOSTS в окружении production).
+  deploy:
+    needs: [test, build, e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          v=$(git describe --tags --always)
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$v" -o dist/gate4ai-relay ./cmd/gate4ai-relay
+      - name: SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload and install
+        env:
+          HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          ssh_opts="-i $HOME/.ssh/id_deploy -o StrictHostKeyChecking=yes -o BatchMode=yes"
+          scp $ssh_opts dist/gate4ai-relay "root@$HOST:/tmp/gate4ai-relay.new"
+          ssh $ssh_opts "root@$HOST" 'sh -s' < deploy/remote-install.sh
+      - name: Public check
+        run: curl -fsS --max-time 10 https://relay.gate4.ai/api/health
