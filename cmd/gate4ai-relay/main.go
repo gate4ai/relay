@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: FSL-1.1-ALv2
+// SPDX-License-Identifier: AGPL-3.0-only
 
 // Команда gate4ai-relay — relay gate4.ai: публичный адрес устройств
 // (<device-id>.<domain>), TLS-passthrough по SNI, туннели WebSocket + yamux,

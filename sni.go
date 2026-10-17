@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: FSL-1.1-ALv2
+// SPDX-License-Identifier: AGPL-3.0-only
 
 // Package relay — собственный relay gate4.ai: устройство держит исходящее
 // соединение WebSocket поверх TLS:443 с мультиплексором yamux; входящие TLS-
